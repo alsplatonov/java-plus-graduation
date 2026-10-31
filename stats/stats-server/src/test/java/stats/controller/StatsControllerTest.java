@@ -26,7 +26,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 @Transactional
 @TestPropertySource(properties = {
-        "client.url=http://localhost:0",
         "client.app-name=ewm-main-service"
 })
 class StatsControllerTest {

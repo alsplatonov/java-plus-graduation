@@ -33,7 +33,7 @@ services:
   ewm-service:
     build:
       context: .
-      dockerfile: main-service/Dockerfile
+      dockerfile: core/main-service/Dockerfile
     container_name: ewm-service
     ports:
       - "8080:8080"
@@ -42,7 +42,6 @@ services:
       - SPRING_DATASOURCE_USERNAME=dbuser
       - SPRING_DATASOURCE_PASSWORD=12345
       - SERVER_PORT=8080
-      - CLIENT_URL=http://stats-server:9090
     depends_on:
       ewm-db:
         condition: service_healthy
