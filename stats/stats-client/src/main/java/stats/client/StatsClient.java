@@ -55,7 +55,7 @@ public class StatsClient {
             }
         }
         if (instance == null) {
-            throw new IllegalStateException(
+            throw new StatsClientException(
                     "Сервис статистики '" + statsServiceId + "' не найден в службе обнаружения");
         }
         return RestClient.builder()
@@ -78,11 +78,12 @@ public class StatsClient {
                     .body(hitDto)
                     .retrieve()
                     .toBodilessEntity();
-        } catch (RestClientException | IllegalStateException e) {
+        } catch (RestClientException | StatsClientException e) {
             log.warn("Не удалось отправить статистику по uri {}: {}", uri, e.getMessage());
         }
     }
 
+    // Возвращает статистику просмотров. Пустой список означает, что просмотров нет
     public List<ViewStatsDto> getStats(LocalDateTime start, LocalDateTime end,
                                        List<String> uris, boolean unique) {
         try {
@@ -101,9 +102,8 @@ public class StatsClient {
                     .body(ViewStatsDto[].class);
 
             return result == null ? List.of() : List.of(result);
-        } catch (RestClientException | IllegalStateException e) {
-            log.warn("Не удалось получить статистику: {}", e.getMessage());
-            return List.of();
+        } catch (RestClientException e) {
+            throw new StatsClientException("Сервис статистики вернул ошибку: " + e.getMessage(), e);
         }
     }
 }

@@ -16,12 +16,14 @@ import ewm.request.service.RequestService;
 import ewm.user.User;
 import ewm.user.UserService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import stats.client.StatsClient;
+import stats.client.StatsClientException;
 import stats.dto.ViewStatsDto;
 
 import java.time.LocalDateTime;
@@ -29,6 +31,7 @@ import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -378,9 +381,16 @@ public class EventServiceImpl implements EventService {
                 .map(EventServiceImpl::eventUri)
                 .toList();
 
-        Map<String, Long> hitsByUri = statsClient.getStats(STATS_RANGE_START, LocalDateTime.now(), uris, true)
-                .stream()
-                .collect(Collectors.toMap(ViewStatsDto::getUri, ViewStatsDto::getHits));
+        Map<String, Long> hitsByUri;
+        try {
+            hitsByUri = statsClient.getStats(STATS_RANGE_START, LocalDateTime.now(), uris, true)
+                    .stream()
+                    .collect(Collectors.toMap(ViewStatsDto::getUri, ViewStatsDto::getHits));
+        } catch (StatsClientException e) {
+            log.warn("Статистика просмотров недоступна, просмотры событий {} не учтены: {}",
+                    eventIds, e.getMessage());
+            return eventIds.stream().collect(Collectors.toMap(id -> id, id -> 0L));
+        }
 
         return eventIds.stream()
                 .collect(Collectors.toMap(

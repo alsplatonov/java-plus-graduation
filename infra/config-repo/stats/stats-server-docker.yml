@@ -1,0 +1,3 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://stats-db:5432/stats
