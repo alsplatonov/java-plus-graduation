@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: config-server
+  profiles:
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          search-locations:
+            - ${config-repo.location}
+            - ${config-repo.location}/core
+            - ${config-repo.location}/stats
+            - ${config-repo.location}/infra
+
+config-repo:
+  location: ${CONFIG_REPO_LOCATION:classpath:/config-repo}
+
+server:
+  port: 0
+
+eureka:
+  instance:
+    prefer-ip-address: true
+    hostname: localhost
+    instance-id: "${spring.application.name}:${random.value}"
+    lease-renewal-interval-in-seconds: 10

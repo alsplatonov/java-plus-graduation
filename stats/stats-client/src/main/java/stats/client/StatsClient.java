@@ -2,6 +2,8 @@ package stats.client;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.client.ServiceInstance;
+import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -20,15 +22,45 @@ public class StatsClient {
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    private final RestClient restClient;
+    private static final int MAX_ATTEMPTS = 3;
+    private static final long RETRY_DELAY_MS = 1000L;
+
+    private final DiscoveryClient discoveryClient;
+    private final String statsServiceId;
     private final String appName;
 
-    public StatsClient(@Value("${client.url}") String serverUrl,
+    public StatsClient(DiscoveryClient discoveryClient,
+                       @Value("${client.stats-service-id:stats-server}") String statsServiceId,
                        @Value("${client.app-name}") String appName) {
-        this.restClient = RestClient.builder()
-                .baseUrl(serverUrl)
-                .build();
+        this.discoveryClient = discoveryClient;
+        this.statsServiceId = statsServiceId;
         this.appName = appName;
+    }
+
+    private RestClient restClient() {
+        ServiceInstance instance = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            List<ServiceInstance> instances = discoveryClient.getInstances(statsServiceId);
+            if (!instances.isEmpty()) {
+                instance = instances.getFirst();
+                break;
+            }
+            if (attempt < MAX_ATTEMPTS) {
+                try {
+                    Thread.sleep(RETRY_DELAY_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        if (instance == null) {
+            throw new StatsClientException(
+                    "Сервис статистики '" + statsServiceId + "' не найден в службе обнаружения");
+        }
+        return RestClient.builder()
+                .baseUrl(instance.getUri().toString())
+                .build();
     }
 
     public void hit(String uri, String ip) {
@@ -40,21 +72,22 @@ public class StatsClient {
         );
 
         try {
-            restClient.post()
+            restClient().post()
                     .uri("/hit")
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(hitDto)
                     .retrieve()
                     .toBodilessEntity();
-        } catch (RestClientException e) {
+        } catch (RestClientException | StatsClientException e) {
             log.warn("Не удалось отправить статистику по uri {}: {}", uri, e.getMessage());
         }
     }
 
+    // Возвращает статистику просмотров. Пустой список означает, что просмотров нет
     public List<ViewStatsDto> getStats(LocalDateTime start, LocalDateTime end,
                                        List<String> uris, boolean unique) {
         try {
-            ViewStatsDto[] result = restClient.get()
+            ViewStatsDto[] result = restClient().get()
                     .uri(uriBuilder -> {
                         uriBuilder.path("/stats")
                                 .queryParam("start", start.format(DATE_FORMATTER))
@@ -70,8 +103,7 @@ public class StatsClient {
 
             return result == null ? List.of() : List.of(result);
         } catch (RestClientException e) {
-            log.warn("Не удалось получить статистику: {}", e.getMessage());
-            return List.of();
+            throw new StatsClientException("Сервис статистики вернул ошибку: " + e.getMessage(), e);
         }
     }
 }

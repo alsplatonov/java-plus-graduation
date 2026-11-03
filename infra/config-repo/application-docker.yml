@@ -1,0 +1,5 @@
+# Профиль docker: в контейнерах Eureka доступна по имени сервиса, а не по localhost
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://discovery-server:8761/eureka/

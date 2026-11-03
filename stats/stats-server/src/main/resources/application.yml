@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: stats-server
+  cloud:
+    config:
+      discovery:
+        enabled: true
+        service-id: config-server
+      fail-fast: true
+      retry:
+        max-attempts: 6
+        initial-interval: 1000
+        multiplier: 1.1
+        max-interval: 2000
+
+---
+spring:
+  config:
+    activate:
+      on-profile: "!test"
+    import: "configserver:"

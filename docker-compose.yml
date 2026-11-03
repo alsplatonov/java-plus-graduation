@@ -1,19 +1,52 @@
 services:
+  discovery-server:
+    build:
+      context: .
+      dockerfile: infra/discovery-server/Dockerfile
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+
+  config-server:
+    build:
+      context: .
+      dockerfile: infra/config-server/Dockerfile
+    container_name: config-server
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+    depends_on:
+      discovery-server:
+        condition: service_started
+
+  gateway-server:
+    build:
+      context: .
+      dockerfile: infra/gateway-server/Dockerfile
+    container_name: gateway-server
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+    depends_on:
+      config-server:
+        condition: service_started
+    restart: on-failure
+
   stats-server:
     build:
       context: .
       dockerfile: stats/stats-server/Dockerfile
     container_name: stats-server
-    ports:
-      - "9090:9090"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://stats-db:5432/stats
-      - SPRING_DATASOURCE_USERNAME=dbuser
-      - SPRING_DATASOURCE_PASSWORD=12345
-      - SERVER_PORT=9090
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
     depends_on:
       stats-db:
         condition: service_healthy
+      config-server:
+        condition: service_started
+    restart: on-failure
 
   stats-db:
     image: postgres:16.1
@@ -33,21 +66,19 @@ services:
   ewm-service:
     build:
       context: .
-      dockerfile: main-service/Dockerfile
+      dockerfile: core/main-service/Dockerfile
     container_name: ewm-service
-    ports:
-      - "8080:8080"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://ewm-db:5432/main
-      - SPRING_DATASOURCE_USERNAME=dbuser
-      - SPRING_DATASOURCE_PASSWORD=12345
-      - SERVER_PORT=8080
-      - CLIENT_URL=http://stats-server:9090
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
     depends_on:
       ewm-db:
         condition: service_healthy
+      config-server:
+        condition: service_started
       stats-server:
         condition: service_started
+    restart: on-failure
 
   ewm-db:
     image: postgres:16.1
@@ -63,4 +94,3 @@ services:
       interval: 3s
       timeout: 3s
       retries: 5
-
