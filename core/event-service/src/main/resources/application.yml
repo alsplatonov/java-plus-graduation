@@ -1,6 +1,6 @@
 spring:
   application:
-    name: main-service
+    name: event-service
   cloud:
     config:
       discovery:

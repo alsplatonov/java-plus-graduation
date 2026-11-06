@@ -11,7 +11,7 @@
                        gateway-server  ──────────┐
         ┌────────────┬────────┴───────┬──────────┐│  lb:// через Eureka
         ▼            ▼                ▼          ▼│
-  user-service  request-service  rating-service  main-service ──► stats-server (статистика просмотров)
+  user-service  request-service  rating-service  event-service ──► stats-server (статистика просмотров)
      user_db       request_db       rating_db      main (events, categories, compilations)
 
   discovery-server (Eureka, 8761)    config-server (конфигурации сервисов из infra/config-repo)
@@ -22,14 +22,14 @@
 | `infra/discovery-server` | Eureka, порт 8761 | — |
 | `infra/config-server` | Config Server (native, файлы из `infra/config-repo`) | — |
 | `infra/gateway-server` | Spring Cloud Gateway, порт **8080**, маршрутизация по микросервисам | — |
-| `core/main-service` | События (создание, модерация, поиск), категории, подборки | `main` (порт 6642) |
+| `core/event-service` | События (создание, модерация, поиск), категории, подборки | `main` (порт 6642) |
 | `core/user-service` | Администрирование пользователей | `user_db` (6643) |
 | `core/request-service` | Заявки на участие в событиях | `request_db` (6644) |
 | `core/rating-service` | Лайки/дизлайки событий, рейтинг событий и авторов (дополнительная функциональность) | `rating_db` (6645) |
 | `core/interaction-api` | Общая библиотека: Feign-клиенты и fallback'и, внутренние DTO, исключения, `ErrorHandler` | — |
 | `stats/*` | Сервис статистики (`stats-server`), клиент (`stats-client`), DTO (`stats-dto`) | `stats` (5432) |
 
-`main-service` остаётся сервисом управления событиями (в него входят также категории и подборки, которые тесно связаны с событиями).
+`event-service` остаётся сервисом управления событиями (в него входят также категории и подборки, которые тесно связаны с событиями).
 Из него вынесены пользователи, заявки и рейтинги.
 
 ### База данных на сервис
@@ -49,7 +49,7 @@
 | `/admin/users/**` | user-service |
 | `/users/*/requests/**`, `/users/*/events/*/requests/**` | request-service |
 | `/users/*/events/*/like`, `/dislike`, `/rating`, `/users/*/rating`, `/users/top-authors` | rating-service |
-| `/admin/**`, `/users/**`, `/categories/**`, `/events/**`, `/compilations/**` (всё остальное) | main-service |
+| `/admin/**`, `/users/**`, `/categories/**`, `/events/**`, `/compilations/**` (всё остальное) | event-service |
 
 ## Внутренний API (между сервисами)
 Доступен только внутри сети сервисов, через Gateway не публикуется (префикс `/internal`). Вызывается через Feign-клиенты из `core/interaction-api` (`ewm.client`).
@@ -58,15 +58,15 @@
 |---|---|---|
 | user-service | `GET /internal/users/{userId}` | пользователь по id (404, если нет) |
 | user-service | `GET /internal/users/batch?ids=1&ids=2` | краткая информация о нескольких пользователях за один запрос |
-| main-service | `GET /internal/events/{eventId}` | данные события для проверок (инициатор, статус, лимит, модерация, дата) |
-| main-service | `GET /internal/events/published-count?initiatorIds=…` | число опубликованных событий по авторам |
+| event-service | `GET /internal/events/{eventId}` | данные события для проверок (инициатор, статус, лимит, модерация, дата) |
+| event-service | `GET /internal/events/published-count?initiatorIds=…` | число опубликованных событий по авторам |
 | request-service | `GET /internal/requests/confirmed-count?eventIds=…` | число подтверждённых заявок по событиям (одним запросом) |
 | request-service | `GET /internal/requests/confirmed?eventId=&userId=` | есть ли подтверждённая заявка пользователя на событие |
 | rating-service | `GET /internal/ratings?eventIds=…` | лайки/дизлайки событий (одним запросом) |
 | rating-service | `GET /internal/ratings/top-events?from=&size=` | события с наивысшим рейтингом |
 
-Кто кого вызывает: `main-service` → user/request/rating-service (имена инициаторов, число заявок, рейтинг); `request-service` → main-service, user-service;
-`rating-service` → main-service, request-service, user-service. Все «списочные» операции используют пакетные эндпоинты, поэтому число межсервисных запросов
+Кто кого вызывает: `event-service` → user/request/rating-service (имена инициаторов, число заявок, рейтинг); `request-service` → event-service, user-service;
+`rating-service` → event-service, request-service, user-service. Все «списочные» операции используют пакетные эндпоинты, поэтому число межсервисных запросов
 не зависит от размера выборки (нет N+1).
 
 ## Отказоустойчивость

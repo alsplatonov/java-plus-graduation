@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.util.List;
 import java.util.Map;
 
-@FeignClient(name = "main-service", contextId = "eventClient", path = "/internal/events",
+@FeignClient(name = "event-service", contextId = "eventClient", path = "/internal/events",
         configuration = FeignClientConfig.class, primary = false, fallbackFactory = EventClient.EventClientFallbackFactory.class)
 public interface EventClient {
 
@@ -31,7 +31,7 @@ public interface EventClient {
         @Override
         public EventClient create(Throwable cause) {
             FallbackSupport.rethrowBusinessException(cause);
-            log.warn("main-service недоступен: {}", cause.toString());
+            log.warn("event-service недоступен: {}", cause.toString());
             return new EventClient() {
                 @Override
                 public EventInternalDto getEvent(Long eventId) {

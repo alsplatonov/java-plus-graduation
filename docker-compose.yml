@@ -69,7 +69,7 @@ services:
   ewm-service:
     build:
       context: .
-      dockerfile: core/main-service/Dockerfile
+      dockerfile: core/event-service/Dockerfile
     container_name: ewm-service
     environment:
       - SPRING_PROFILES_ACTIVE=docker
