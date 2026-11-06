@@ -5,9 +5,11 @@ import ewm.compilation.dto.NewCompilationDto;
 import ewm.compilation.entity.Compilation;
 import ewm.event.entity.Event;
 import ewm.event.mapper.EventMapper;
+import ewm.user.dto.UserShortDto;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
 import java.util.Set;
 
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
@@ -21,9 +23,9 @@ public final class CompilationMapper {
         return compilation;
     }
 
-    public static CompilationDto toCompilationDto(Compilation compilation) {
+    public static CompilationDto toCompilationDto(Compilation compilation, Map<Long, UserShortDto> initiators) {
         return new CompilationDto(
-                EventMapper.toEventShortDto(compilation.getEvents()),
+                EventMapper.toEventShortDto(compilation.getEvents(), initiators),
                 compilation.getId(),
                 compilation.getPinned(),
                 compilation.getTitle()

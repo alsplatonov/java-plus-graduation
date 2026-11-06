@@ -17,7 +17,7 @@ public final class EventSpecification {
         return (root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (searchParams.getUsers() != null && !searchParams.getUsers().isEmpty()) {
-                predicates.add(root.get("initiator").get("id").in(searchParams.getUsers()));
+                predicates.add(root.get("initiatorId").in(searchParams.getUsers()));
             }
             if (searchParams.getStates() != null && !searchParams.getStates().isEmpty()) {
                 predicates.add(root.get("state").in(searchParams.getStates()));

@@ -2,6 +2,9 @@ package ewm.event.service;
 
 import ewm.category.Category;
 import ewm.category.CategoryService;
+import ewm.client.RatingClient;
+import ewm.client.RequestClient;
+import ewm.client.UserClient;
 import ewm.common.dto.PageRequestDto;
 import ewm.event.dto.*;
 import ewm.event.entity.*;
@@ -10,11 +13,9 @@ import ewm.event.repository.EventRepository;
 import ewm.exception.ConflictException;
 import ewm.exception.NotFoundException;
 import ewm.exception.ValidationException;
-import ewm.rating.dto.EventRatingCount;
-import ewm.rating.service.RatingService;
-import ewm.request.service.RequestService;
-import ewm.user.User;
-import ewm.user.UserService;
+import ewm.rating.dto.EventRatingDto;
+import ewm.user.dto.UserDto;
+import ewm.user.dto.UserShortDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -44,37 +45,36 @@ public class EventServiceImpl implements EventService {
     private static final int ADMIN_EVENT_LEAD_TIME_HOURS = 1;
 
     private final EventRepository eventRepository;
-    private final UserService userService;
+    private final UserClient userClient;
     private final CategoryService categoryService;
-    private final RequestService requestService;
-    private final RatingService ratingService;
+    private final RequestClient requestClient;
+    private final RatingClient ratingClient;
+    private final InitiatorResolver initiatorResolver;
 
     @Override
     public List<EventShortDto> getUserEvents(Long userId, PageRequestDto pageRequest) {
         getUser(userId);
         List<Event> events = getPage(new EventPage(pageRequest, Sort.unsorted()),
                 pageable -> eventRepository.findAllByInitiatorId(userId, pageable));
-        Map<Long, EventMetrics> metrics = metricsFor(eventIdsOf(events));
-        return events.stream()
-                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId())))
-                .toList();
+        return toShortDtos(events, metricsFor(eventIdsOf(events)));
     }
 
     @Override
     @Transactional
     public EventFullDto create(Long userId, NewEventDto dto) {
         validateEventDate(dto.getEventDate());
-        User initiator = getUser(userId);
+        UserDto initiator = getUser(userId);
         Category category = getCategory(dto.getCategory());
-        Event event = EventMapper.toEvent(dto, new EventCreationContext(category, initiator));
+        Event event = EventMapper.toEvent(dto, new EventCreationContext(category, initiator.getId()));
         Event saved = eventRepository.save(event);
-        return EventMapper.toEventFullDto(saved, metricsFor(saved.getId()));
+        return EventMapper.toEventFullDto(saved, metricsFor(saved.getId()),
+                new UserShortDto(initiator.getId(), initiator.getName()));
     }
 
     @Override
     public EventFullDto getUserEvent(Long userId, Long eventId) {
         Event event = getUserEventOrThrow(userId, eventId);
-        return EventMapper.toEventFullDto(event, metricsFor(eventId));
+        return toFullDto(event);
     }
 
     @Override
@@ -115,7 +115,7 @@ public class EventServiceImpl implements EventService {
         if (request.getTitle() != null) {
             event.setTitle(request.getTitle());
         }
-        return EventMapper.toEventFullDto(event, metricsFor(event.getId()));
+        return toFullDto(event);
     }
 
     @Override
@@ -123,8 +123,10 @@ public class EventServiceImpl implements EventService {
         List<Event> events = getPage(new EventPage(searchParams, Sort.unsorted()), pageable -> eventRepository.findAll(
                 EventSpecification.byAdminFilters(searchParams), pageable));
         Map<Long, EventMetrics> metrics = metricsFor(eventIdsOf(events));
+        Map<Long, UserShortDto> initiators = initiatorsOf(events);
         return events.stream()
-                .map(event -> EventMapper.toEventFullDto(event, metrics.get(event.getId())))
+                .map(event -> EventMapper.toEventFullDto(event, metrics.get(event.getId()),
+                        initiatorResolver.pick(initiators, event.getInitiatorId())))
                 .toList();
     }
 
@@ -163,7 +165,7 @@ public class EventServiceImpl implements EventService {
         if (request.getTitle() != null) {
             event.setTitle(request.getTitle());
         }
-        return EventMapper.toEventFullDto(event, metricsFor(event.getId()));
+        return toFullDto(event);
     }
 
     @Override
@@ -194,9 +196,7 @@ public class EventServiceImpl implements EventService {
                     .toList();
         }
 
-        return events.stream()
-                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId())))
-                .toList();
+        return toShortDtos(events, metrics);
     }
 
     @Override
@@ -205,7 +205,7 @@ public class EventServiceImpl implements EventService {
         if (event.getState() != EventState.PUBLISHED) {
             throw new NotFoundException("Событие с идентификатором " + eventId + " не найдено.");
         }
-        return EventMapper.toEventFullDto(event, metricsFor(eventId));
+        return toFullDto(event);
     }
 
     @Override
@@ -223,22 +223,25 @@ public class EventServiceImpl implements EventService {
 
     @Override
     public List<EventShortDto> getTopEvents(int from, int size) {
-        List<Long> topEventIds = ratingService.getTopEvents(from, size).stream()
-                .map(EventRatingCount::getEventId)
+        List<Long> topEventIds = ratingClient.getTopEvents(from, size).stream()
+                .map(EventRatingDto::getEventId)
                 .toList();
 
         if (topEventIds.isEmpty()) {
             return List.of();
         }
 
-        Map<Long, Event> eventById = getEventsByIds(new HashSet<>(topEventIds)).stream()
+        // события, которых нет в БД (например, удалены), пропускаем
+        Map<Long, Event> eventById = eventRepository.findAllById(topEventIds).stream()
                 .collect(Collectors.toMap(Event::getId, event -> event));
         Map<Long, EventMetrics> metrics = metricsFor(topEventIds);
+        Map<Long, UserShortDto> initiators = initiatorsOf(eventById.values());
 
         return topEventIds.stream()
                 .map(eventById::get)
                 .filter(Objects::nonNull)
-                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId())))
+                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId()),
+                        initiatorResolver.pick(initiators, event.getInitiatorId())))
                 .toList();
     }
 
@@ -301,8 +304,25 @@ public class EventServiceImpl implements EventService {
         event.setState(EventState.CANCELED);
     }
 
-    private User getUser(Long userId) {
-        return userService.getEntityById(userId);
+    private UserDto getUser(Long userId) {
+        return userClient.getUser(userId);
+    }
+
+    private Map<Long, UserShortDto> initiatorsOf(Collection<Event> events) {
+        return initiatorResolver.resolve(events.stream().map(Event::getInitiatorId).toList());
+    }
+
+    private EventFullDto toFullDto(Event event) {
+        return EventMapper.toEventFullDto(event, metricsFor(event.getId()),
+                initiatorResolver.pick(initiatorsOf(List.of(event)), event.getInitiatorId()));
+    }
+
+    private List<EventShortDto> toShortDtos(List<Event> events, Map<Long, EventMetrics> metrics) {
+        Map<Long, UserShortDto> initiators = initiatorsOf(events);
+        return events.stream()
+                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId()),
+                        initiatorResolver.pick(initiators, event.getInitiatorId())))
+                .toList();
     }
 
     private Category getCategory(Long categoryId) {
@@ -332,15 +352,16 @@ public class EventServiceImpl implements EventService {
         if (eventIds.isEmpty()) {
             return Map.of();
         }
-        Map<Long, Long> confirmedByEvent = requestService.countConfirmedForEvents(eventIds);
+        // по одному запросу в каждый сервис на всю выборку событий; при недоступности сервиса — значения 0
+        Map<Long, Long> confirmedByEvent = requestClient.countConfirmed(eventIds);
         Map<Long, Long> viewsByEvent = viewsFor(eventIds);
-        Map<Long, EventRatingCount> ratingsByEvent =
-                ratingService.getRatingsForEvents(eventIds);
+        Map<Long, EventRatingDto> ratingsByEvent = ratingClient.getRatings(eventIds).stream()
+                .collect(Collectors.toMap(EventRatingDto::getEventId, rating -> rating, (first, second) -> first));
 
         return eventIds.stream().collect(Collectors.toMap(
                 id -> id,
                 id -> {
-                    EventRatingCount rating = ratingsByEvent.get(id);
+                    EventRatingDto rating = ratingsByEvent.get(id);
 
                     long likes = rating != null ? rating.getLikes() : 0L;
                     long dislikes = rating != null ? rating.getDislikes() : 0L;

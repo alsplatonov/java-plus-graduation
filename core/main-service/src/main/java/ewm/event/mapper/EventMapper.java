@@ -6,11 +6,12 @@ import ewm.event.dto.EventShortDto;
 import ewm.event.dto.LocationDto;
 import ewm.event.dto.NewEventDto;
 import ewm.event.entity.*;
-import ewm.user.UserMapper;
+import ewm.user.dto.UserShortDto;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -23,7 +24,7 @@ public final class EventMapper {
         event.setCategory(context.category());
         event.setDescription(dto.getDescription());
         event.setEventDate(dto.getEventDate());
-        event.setInitiator(context.initiator());
+        event.setInitiatorId(context.initiatorId());
         event.setLocation(toLocation(dto.getLocation()));
         event.setPaid(Boolean.TRUE.equals(dto.getPaid()));
         event.setParticipantLimit(dto.getParticipantLimit() == null ? 0 : dto.getParticipantLimit());
@@ -34,7 +35,7 @@ public final class EventMapper {
         return event;
     }
 
-    public static EventFullDto toEventFullDto(Event event, EventMetrics metrics) {
+    public static EventFullDto toEventFullDto(Event event, EventMetrics metrics, UserShortDto initiator) {
         return new EventFullDto(
                 event.getAnnotation(),
                 CategoryMapper.toCategoryDto(event.getCategory()),
@@ -43,7 +44,7 @@ public final class EventMapper {
                 event.getDescription(),
                 event.getEventDate(),
                 event.getId(),
-                UserMapper.toUserShortDto(event.getInitiator()),
+                initiator,
                 toLocationDto(event.getLocation()),
                 event.isPaid(),
                 event.getParticipantLimit(),
@@ -57,14 +58,14 @@ public final class EventMapper {
                 metrics.rating());
     }
 
-    public static EventShortDto toEventShortDto(Event event, EventMetrics metrics) {
+    public static EventShortDto toEventShortDto(Event event, EventMetrics metrics, UserShortDto initiator) {
         return new EventShortDto(
                 event.getAnnotation(),
                 CategoryMapper.toCategoryDto(event.getCategory()),
                 metrics.confirmedRequests(),
                 event.getEventDate(),
                 event.getId(),
-                UserMapper.toUserShortDto(event.getInitiator()),
+                initiator,
                 event.isPaid(),
                 event.getTitle(),
                 metrics.views(),
@@ -74,9 +75,10 @@ public final class EventMapper {
         );
     }
 
-    public static Set<EventShortDto> toEventShortDto(Set<Event> events) {
+    public static Set<EventShortDto> toEventShortDto(Set<Event> events, Map<Long, UserShortDto> initiators) {
         return events.stream()
-                .map(event -> toEventShortDto(event, EventMetrics.EMPTY))
+                .map(event -> toEventShortDto(event, EventMetrics.EMPTY,
+                        initiators.getOrDefault(event.getInitiatorId(), new UserShortDto(event.getInitiatorId(), null))))
                 .collect(Collectors.toSet());
     }
 

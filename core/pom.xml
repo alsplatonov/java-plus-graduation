@@ -13,7 +13,11 @@
     <packaging>pom</packaging>
 
     <modules>
+        <module>interaction-api</module>
         <module>main-service</module>
+        <module>user-service</module>
+        <module>request-service</module>
+        <module>rating-service</module>
     </modules>
 
 </project>
