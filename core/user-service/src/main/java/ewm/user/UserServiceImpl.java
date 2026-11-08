@@ -1,5 +1,6 @@
 package ewm.user;
 
+import ewm.common.dto.OffsetPageRequest;
 import ewm.exception.ConflictException;
 import ewm.exception.NotFoundException;
 import ewm.user.dto.NewUserRequest;
@@ -9,7 +10,7 @@ import ewm.user.dto.UserShortDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,8 +38,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public List<UserDto> getAll(UserSearchParams searchParams) {
-        PageRequest pageRequest = PageRequest.of(searchParams.getFrom() / searchParams.getSize(),
-                searchParams.getSize(), Sort.by("id"));
+        Pageable pageRequest = OffsetPageRequest.of(searchParams.getFrom(), searchParams.getSize(), Sort.by("id"));
         Page<User> page = (searchParams.getIds() == null || searchParams.getIds().isEmpty())
                 ? userRepository.findAll(pageRequest)
                 : userRepository.findAllByIdIn(searchParams.getIds(), pageRequest);

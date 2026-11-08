@@ -5,10 +5,12 @@ import ewm.category.CategoryService;
 import ewm.client.RatingClient;
 import ewm.client.RequestClient;
 import ewm.client.UserClient;
+import ewm.common.dto.OffsetPageRequest;
 import ewm.common.dto.PageRequestDto;
 import ewm.event.dto.*;
 import ewm.event.entity.*;
 import ewm.event.mapper.EventMapper;
+import ewm.event.repository.EventKeyFinder;
 import ewm.event.repository.EventRepository;
 import ewm.exception.ConflictException;
 import ewm.exception.NotFoundException;
@@ -19,8 +21,9 @@ import ewm.user.dto.UserShortDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import stats.client.StatsClient;
@@ -31,6 +34,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Slf4j
 @Service
@@ -41,10 +45,12 @@ public class EventServiceImpl implements EventService {
     private final StatsClient statsClient;
 
     private static final LocalDateTime STATS_RANGE_START = LocalDateTime.of(2000, 1, 1, 0, 0);
+    private static final int REMOTE_BATCH_SIZE = 200;
     private static final int EVENT_LEAD_TIME_HOURS = 2;
     private static final int ADMIN_EVENT_LEAD_TIME_HOURS = 1;
 
     private final EventRepository eventRepository;
+    private final EventKeyFinder eventKeyFinder;
     private final UserClient userClient;
     private final CategoryService categoryService;
     private final RequestClient requestClient;
@@ -54,7 +60,7 @@ public class EventServiceImpl implements EventService {
     @Override
     public List<EventShortDto> getUserEvents(Long userId, PageRequestDto pageRequest) {
         getUser(userId);
-        List<Event> events = getPage(new EventPage(pageRequest, Sort.unsorted()),
+        List<Event> events = getPage(new EventPage(pageRequest, Sort.by("id")),
                 pageable -> eventRepository.findAllByInitiatorId(userId, pageable));
         return toShortDtos(events, metricsFor(eventIdsOf(events)));
     }
@@ -120,7 +126,7 @@ public class EventServiceImpl implements EventService {
 
     @Override
     public List<EventFullDto> getAdminEvents(AdminEventSearchParams searchParams) {
-        List<Event> events = getPage(new EventPage(searchParams, Sort.unsorted()), pageable -> eventRepository.findAll(
+        List<Event> events = getPage(new EventPage(searchParams, Sort.by("id")), pageable -> eventRepository.findAll(
                 EventSpecification.byAdminFilters(searchParams), pageable));
         Map<Long, EventMetrics> metrics = metricsFor(eventIdsOf(events));
         Map<Long, UserShortDto> initiators = initiatorsOf(events);
@@ -176,27 +182,55 @@ public class EventServiceImpl implements EventService {
             searchParams.setRangeStart(LocalDateTime.now());
         }
 
-        List<Event> events = getPage(new EventPage(searchParams, toSort(searchParams.getSort())),
-                pageable ->
-                        eventRepository.findAll(EventSpecification.byPublicFilters(searchParams), pageable));
+        Specification<Event> specification = EventSpecification.byPublicFilters(searchParams);
+        PublicEventSort sort = searchParams.getSort();
+        boolean sortedByMetric = sort == PublicEventSort.VIEWS || sort == PublicEventSort.RATING;
 
-        Map<Long, EventMetrics> metrics = metricsFor(eventIdsOf(events));
+        if (!sortedByMetric && !searchParams.isOnlyAvailable()) {
+            // порядок и страница определяются целиком на уровне БД
+            List<Event> events = getPage(new EventPage(searchParams, Sort.by("eventDate", "id")),
+                    pageable -> eventRepository.findAll(specification, pageable));
+            return toShortDtos(events, metricsFor(eventIdsOf(events)));
+        }
+        return getRankedPublicEvents(searchParams, specification, sort);
+    }
 
-        if (searchParams.getSort() == PublicEventSort.VIEWS) {
-            events = events.stream()
-                    .sorted(Comparator.comparingLong(
-                                    (Event event) -> metrics.getOrDefault(event.getId(), EventMetrics.EMPTY).views())
-                            .reversed())
-                    .toList();
-        } else if (searchParams.getSort() == PublicEventSort.RATING) {
-            events = events.stream()
-                    .sorted(Comparator.comparingLong(
-                                    (Event event) -> metrics.getOrDefault(event.getId(), EventMetrics.EMPTY).rating())
-                            .reversed())
-                    .toList();
+    private List<EventShortDto> getRankedPublicEvents(PublicEventSearchParams searchParams,
+                                                      Specification<Event> specification, PublicEventSort sort) {
+        List<Object[]> keys = eventKeyFinder.findKeys(specification);
+        if (keys.isEmpty()) {
+            return List.of();
+        }
+        List<Long> allIds = keys.stream().map(key -> (Long) key[0]).toList();
+        Map<Long, EventMetrics> metrics = metricsFor(allIds);
+
+        Stream<Object[]> candidates = keys.stream();
+        if (searchParams.isOnlyAvailable()) {
+            candidates = candidates.filter(key -> {
+                int limit = ((Number) key[1]).intValue();
+                return limit == 0
+                        || metrics.getOrDefault((Long) key[0], EventMetrics.EMPTY).confirmedRequests() < limit;
+            });
+        }
+        List<Long> ids = candidates.map(key -> (Long) key[0]).collect(Collectors.toList());
+
+        if (sort == PublicEventSort.VIEWS) {
+            ids.sort(Comparator.comparingLong((Long id) -> metrics.get(id).views()).reversed());
+        } else if (sort == PublicEventSort.RATING) {
+            ids.sort(Comparator.comparingLong((Long id) -> metrics.get(id).rating()).reversed());
         }
 
-        return toShortDtos(events, metrics);
+        List<Long> pageIds = ids.stream()
+                .skip(searchParams.getFrom())
+                .limit(searchParams.getSize())
+                .toList();
+        if (pageIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Event> eventById = eventRepository.findAllById(pageIds).stream()
+                .collect(Collectors.toMap(Event::getId, Function.identity()));
+        List<Event> page = pageIds.stream().map(eventById::get).filter(Objects::nonNull).toList();
+        return toShortDtos(page, metrics);
     }
 
     @Override
@@ -264,14 +298,10 @@ public class EventServiceImpl implements EventService {
         }
     }
 
-    private List<Event> getPage(EventPage page, Function<PageRequest, Page<Event>> loader) {
+    private List<Event> getPage(EventPage page, Function<Pageable, Page<Event>> loader) {
 
         return loader.apply(
-                PageRequest.of(
-                        page.from / page.size,
-                        page.size,
-                        page.sort
-                )
+                OffsetPageRequest.of(page.from, page.size, page.sort)
         ).getContent();
     }
 
@@ -279,13 +309,6 @@ public class EventServiceImpl implements EventService {
         if (rangeStart != null && rangeEnd != null && rangeStart.isAfter(rangeEnd)) {
             throw new ValidationException("Дата rangeStart не может быть позже даты rangeEnd.");
         }
-    }
-
-    private Sort toSort(PublicEventSort sort) {
-        if (sort == PublicEventSort.VIEWS || sort == PublicEventSort.RATING) {
-            return Sort.unsorted();
-        }
-        return Sort.by(Sort.Direction.ASC, "eventDate");
     }
 
     private void updateAdminState(Event event, EventAdminStateAction stateAction) {
@@ -353,10 +376,13 @@ public class EventServiceImpl implements EventService {
             return Map.of();
         }
         // по одному запросу в каждый сервис на всю выборку событий; при недоступности сервиса — значения 0
-        Map<Long, Long> confirmedByEvent = requestClient.countConfirmed(eventIds);
+        Map<Long, Long> confirmedByEvent = new HashMap<>();
+        Map<Long, EventRatingDto> ratingsByEvent = new HashMap<>();
+        for (List<Long> chunk : partition(eventIds)) {
+            confirmedByEvent.putAll(requestClient.countConfirmed(chunk));
+            ratingClient.getRatings(chunk).forEach(rating -> ratingsByEvent.putIfAbsent(rating.getEventId(), rating));
+        }
         Map<Long, Long> viewsByEvent = viewsFor(eventIds);
-        Map<Long, EventRatingDto> ratingsByEvent = ratingClient.getRatings(eventIds).stream()
-                .collect(Collectors.toMap(EventRatingDto::getEventId, rating -> rating, (first, second) -> first));
 
         return eventIds.stream().collect(Collectors.toMap(
                 id -> id,
@@ -394,6 +420,23 @@ public class EventServiceImpl implements EventService {
     }
 
     private Map<Long, Long> viewsFor(List<Long> eventIds) {
+        Map<Long, Long> views = new HashMap<>();
+        for (List<Long> chunk : partition(eventIds)) {
+            views.putAll(viewsForChunk(chunk));
+        }
+        return views;
+    }
+
+    // Разбивает идентификаторы на части, чтобы не превышать допустимую длину URL при вызовах других сервисов
+    private static List<List<Long>> partition(List<Long> ids) {
+        List<List<Long>> chunks = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i += REMOTE_BATCH_SIZE) {
+            chunks.add(ids.subList(i, Math.min(i + REMOTE_BATCH_SIZE, ids.size())));
+        }
+        return chunks;
+    }
+
+    private Map<Long, Long> viewsForChunk(List<Long> eventIds) {
         if (eventIds.isEmpty()) {
             return Map.of();
         }

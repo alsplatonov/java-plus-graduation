@@ -3,6 +3,8 @@ package ewm.event.repository;
 import ewm.event.entity.Event;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
@@ -16,6 +18,15 @@ public interface EventRepository extends JpaRepository<Event, Long>, JpaSpecific
 
     boolean existsByCategoryId(Long categoryId);
 
+    @Override
+    @EntityGraph(attributePaths = "category")
+    Page<Event> findAll(Specification<Event> spec, Pageable pageable);
+
+    @Override
+    @EntityGraph(attributePaths = "category")
+    List<Event> findAllById(Iterable<Long> ids);
+
+    @EntityGraph(attributePaths = "category")
     Page<Event> findAllByInitiatorId(Long initiatorId, Pageable pageable);
 
     Optional<Event> findByIdAndInitiatorId(Long id, Long initiatorId);

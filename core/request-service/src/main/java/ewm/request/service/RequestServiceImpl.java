@@ -13,7 +13,9 @@ import ewm.request.mapper.RequestMapper;
 import ewm.request.repository.RequestRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,19 +24,23 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
 public class RequestServiceImpl implements RequestService {
 
     private final RequestRepository requestRepository;
     private final EventClient eventClient;
     private final UserClient userClient;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
-    @Transactional
     public ParticipationRequestDto create(Long userId, Long eventId) {
+        // обращения к другим сервисам выполняются вне транзакции БД
         userClient.getUser(userId);
         EventInternalDto event = eventClient.getEvent(eventId);
 
+        return inTransaction(() -> createRequest(userId, eventId, event));
+    }
+
+    private ParticipationRequestDto createRequest(Long userId, Long eventId, EventInternalDto event) {
         if (event.getInitiatorId().equals(userId)) {
             throw new ConflictException("Инициатор события не может добавить запрос на участие в своём событии.");
         }
@@ -87,11 +93,15 @@ public class RequestServiceImpl implements RequestService {
     }
 
     @Override
-    @Transactional
     public EventRequestStatusUpdateResult updateStatus(Long userId, Long eventId,
                                                        EventRequestStatusUpdateRequest updateRequest) {
+        // обращение к event-service выполняется вне транзакции БД
         EventInternalDto event = getOwnedEvent(userId, eventId);
+        return inTransaction(() -> changeStatuses(eventId, event, updateRequest));
+    }
 
+    private EventRequestStatusUpdateResult changeStatuses(Long eventId, EventInternalDto event,
+                                                          EventRequestStatusUpdateRequest updateRequest) {
         List<Request> requests = requestRepository.findAllById(updateRequest.getRequestIds());
 
         if (requests.size() != updateRequest.getRequestIds().size()) {
@@ -148,6 +158,10 @@ public class RequestServiceImpl implements RequestService {
         }
         return requestRepository.countConfirmedByEventIds(eventIds).stream()
                 .collect(Collectors.toMap(EventConfirmedCount::getEventId, EventConfirmedCount::getConfirmedRequests));
+    }
+
+    private <T> T inTransaction(java.util.function.Supplier<T> action) {
+        return new TransactionTemplate(transactionManager).execute(status -> action.get());
     }
 
     private EventInternalDto getOwnedEvent(Long userId, Long eventId) {

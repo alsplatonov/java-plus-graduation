@@ -1,5 +1,6 @@
 package ewm.category;
 
+import ewm.common.dto.OffsetPageRequest;
 import ewm.category.dto.CategoryDto;
 import ewm.category.dto.NewCategoryDto;
 import ewm.event.service.EventLookupService;
@@ -7,7 +8,7 @@ import ewm.exception.ConflictException;
 import ewm.exception.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,7 +54,7 @@ public class CategoryServiceImpl implements CategoryService {
 
     @Override
     public List<CategoryDto> getAll(int from, int size) {
-        return categoryRepository.findAll(PageRequest.of(from / size, size)).stream()
+        return categoryRepository.findAll(OffsetPageRequest.of(from, size, Sort.by("id"))).stream()
                 .map(CategoryMapper::toCategoryDto)
                 .toList();
     }

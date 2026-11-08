@@ -1,5 +1,6 @@
 package ewm.compilation.service;
 
+import ewm.common.dto.OffsetPageRequest;
 import ewm.compilation.dto.CompilationDto;
 import ewm.compilation.dto.CompilationSearchParams;
 import ewm.compilation.dto.NewCompilationDto;
@@ -14,7 +15,6 @@ import ewm.exception.NotFoundException;
 import ewm.user.dto.UserShortDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,7 +22,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -67,8 +69,15 @@ public class CompilationServiceImpl implements CompilationService {
 
     @Override
     public List<CompilationDto> getCompilationsByParams(CompilationSearchParams params) {
-        Pageable pageable = PageRequest.of(params.getFrom() / params.getSize(), params.getSize());
-        List<Compilation> compilations = compilationRepository.findAll(params.getPinned(), pageable);
+        Pageable pageable = OffsetPageRequest.of(params.getFrom(), params.getSize());
+        // 1) идентификаторы подборок страницы, 2) подборки со всеми событиями и категориями одним запросом
+        List<Long> ids = compilationRepository.findIds(params.getPinned(), pageable);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Compilation> byId = compilationRepository.findAllWithEvents(ids).stream()
+                .collect(Collectors.toMap(Compilation::getId, compilation -> compilation));
+        List<Compilation> compilations = ids.stream().map(byId::get).filter(Objects::nonNull).toList();
         // инициаторы всех событий всех подборок запрашиваются у user-service одним обращением
         Map<Long, UserShortDto> initiators = initiatorResolver.resolve(compilations.stream()
                 .flatMap(compilation -> compilation.getEvents().stream())

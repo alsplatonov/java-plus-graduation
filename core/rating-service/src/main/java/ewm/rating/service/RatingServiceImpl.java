@@ -1,5 +1,6 @@
 package ewm.rating.service;
 
+import ewm.common.dto.OffsetPageRequest;
 import ewm.client.EventClient;
 import ewm.client.RequestClient;
 import ewm.client.UserClient;
@@ -16,9 +17,10 @@ import ewm.rating.mapper.RatingMapper;
 import ewm.rating.repository.RatingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.Comparator;
@@ -28,22 +30,27 @@ import java.util.Map;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
 public class RatingServiceImpl implements RatingService {
 
     private final RatingRepository ratingRepository;
     private final EventClient eventClient;
     private final RequestClient requestClient;
     private final UserClient userClient;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
-    @Transactional
     public void rate(Long userId, Long eventId, RatingType type) {
+        // проверки через другие сервисы выполняются вне транзакции БД
         userClient.getUser(userId);
         EventInternalDto event = eventClient.getEvent(eventId);
 
         validateCanRate(event, userId);
 
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> saveRating(userId, eventId, type, event));
+        log.info("Пользователь {} оценил событие {} как {}", userId, eventId, type);
+    }
+
+    private void saveRating(Long userId, Long eventId, RatingType type, EventInternalDto event) {
         ratingRepository.findByEventIdAndUserId(eventId, userId)
                 .ifPresentOrElse(
                         rating -> rating.setType(type),
@@ -56,8 +63,6 @@ public class RatingServiceImpl implements RatingService {
                             rating.setCreated(LocalDateTime.now());
                             ratingRepository.save(rating);
                         });
-
-        log.info("Пользователь {} оценил событие {} как {}", userId, eventId, type);
     }
 
     @Override
@@ -81,7 +86,7 @@ public class RatingServiceImpl implements RatingService {
 
     @Override
     public List<EventRatingDto> getTopEvents(int from, int size) {
-        return ratingRepository.findTopEvents(PageRequest.of(from / size, size));
+        return ratingRepository.findTopEvents(OffsetPageRequest.of(from, size));
     }
 
     @Override
