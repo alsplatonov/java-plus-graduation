@@ -8,7 +8,23 @@ spring:
         locator:
           enabled: false
       routes:
-        - id: main-service-route
-          uri: lb://main-service
+        # Маршруты проверяются по порядку: сначала специфичные, затем все остальные в event-service
+        - id: user-service-route
+          uri: lb://user-service
+          predicates:
+            - Path=/admin/users/**
+
+        - id: request-service-route
+          uri: lb://request-service
+          predicates:
+            - Path=/users/*/requests/**,/users/*/events/*/requests/**
+
+        - id: rating-service-route
+          uri: lb://rating-service
+          predicates:
+            - Path=/users/*/events/*/like,/users/*/events/*/dislike,/users/*/events/*/rating,/users/*/rating,/users/top-authors
+
+        - id: event-service-route
+          uri: lb://event-service
           predicates:
             - Path=/admin/**,/users/**,/categories/**,/events/**,/compilations/**

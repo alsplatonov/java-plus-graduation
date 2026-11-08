@@ -1,0 +1,3 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://rating-db:5432/rating_db

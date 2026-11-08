@@ -7,3 +7,16 @@ eureka:
     hostname: localhost
     instance-id: "${spring.application.name}:${random.value}"
     lease-renewal-interval-in-seconds: 10
+
+# Межсервисные вызовы (OpenFeign): circuit breaker (Resilience4j) и таймауты
+# Повтор запроса при ответах 5xx настроен в ewm.client.FeignClientConfig (Retryer), параметры circuit breaker — в ewm.client.ResilienceConfig
+spring:
+  cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: true
+      client:
+        config:
+          default:
+            connect-timeout: 2000
+            read-timeout: 2000

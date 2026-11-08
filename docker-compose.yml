@@ -14,6 +14,7 @@ services:
     container_name: config-server
     environment:
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
     depends_on:
       discovery-server:
         condition: service_started
@@ -28,6 +29,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
     depends_on:
       config-server:
         condition: service_started
@@ -41,6 +43,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
     depends_on:
       stats-db:
         condition: service_healthy
@@ -66,11 +69,12 @@ services:
   ewm-service:
     build:
       context: .
-      dockerfile: core/main-service/Dockerfile
+      dockerfile: core/event-service/Dockerfile
     container_name: ewm-service
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
     depends_on:
       ewm-db:
         condition: service_healthy
@@ -91,6 +95,99 @@ services:
       - "6642:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dbuser -d main"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  user-service:
+    build:
+      context: .
+      dockerfile: core/user-service/Dockerfile
+    container_name: user-service
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
+    depends_on:
+      user-db:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+    restart: on-failure
+
+  user-db:
+    image: postgres:16.1
+    container_name: user-db
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: '12345'
+    ports:
+      - "6643:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d user_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  request-service:
+    build:
+      context: .
+      dockerfile: core/request-service/Dockerfile
+    container_name: request-service
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
+    depends_on:
+      request-db:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+    restart: on-failure
+
+  request-db:
+    image: postgres:16.1
+    container_name: request-db
+    environment:
+      POSTGRES_DB: request_db
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: '12345'
+    ports:
+      - "6644:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d request_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  rating-service:
+    build:
+      context: .
+      dockerfile: core/rating-service/Dockerfile
+    container_name: rating-service
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - JAVA_OPTS=-Deureka.client.serviceUrl.defaultZone=http://discovery-server:8761/eureka/
+    depends_on:
+      rating-db:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+    restart: on-failure
+
+  rating-db:
+    image: postgres:16.1
+    container_name: rating-db
+    environment:
+      POSTGRES_DB: rating_db
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: '12345'
+    ports:
+      - "6645:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d rating_db"]
       interval: 3s
       timeout: 3s
       retries: 5
