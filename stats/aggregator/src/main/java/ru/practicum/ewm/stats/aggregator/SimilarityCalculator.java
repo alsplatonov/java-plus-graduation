@@ -7,7 +7,6 @@ import ru.practicum.ewm.stats.avro.UserActionAvro;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,7 +32,6 @@ public class SimilarityCalculator {
     private final Map<Long, Set<Long>> userEvents = new HashMap<>();
     private final Map<Long, Double> eventSums = new HashMap<>();
     private final Map<Long, Map<Long, Double>> minSums = new HashMap<>();
-    private final Map<Long, TreeSet<Long>> partners = new HashMap<>();
 
     public static double weightOf(ActionTypeAvro type) {
         return switch (type) {
@@ -59,10 +57,11 @@ public class SimilarityCalculator {
         eventWeights.put(userId, newWeight);
         double sumA = eventSums.merge(eventId, newWeight - oldWeight, Double::sum);
 
-        Set<Long> events = userEvents.computeIfAbsent(userId, k -> new HashSet<>());
+        Set<Long> events = userEvents.computeIfAbsent(userId, k -> new TreeSet<>());
         events.add(eventId);
 
-        // 1) обновляем S_min для пар события с остальными событиями этого пользователя
+        // Пересчитываем сходство с остальными мероприятиями этого пользователя (по возрастанию id)
+        List<EventSimilarityAvro> result = new ArrayList<>();
         for (Long other : events) {
             if (other == eventId) {
                 continue;
@@ -72,21 +71,8 @@ public class SimilarityCalculator {
 
             long first = Math.min(eventId, other);
             long second = Math.max(eventId, other);
-            minSums.computeIfAbsent(first, k -> new HashMap<>()).merge(second, delta, Double::sum);
-            partners.computeIfAbsent(eventId, k -> new TreeSet<>()).add(other);
-            partners.computeIfAbsent(other, k -> new TreeSet<>()).add(eventId);
-        }
+            double sMin = minSums.computeIfAbsent(first, k -> new HashMap<>()).merge(second, delta, Double::sum);
 
-        // 2) S_A изменилась, поэтому пересчитываем сходство со всеми событиями, у которых есть общая S_min
-        //    (в том числе благодаря другим пользователям), в порядке возрастания идентификатора
-        List<EventSimilarityAvro> result = new ArrayList<>();
-        for (Long other : partners.getOrDefault(eventId, new TreeSet<>())) {
-            long first = Math.min(eventId, other);
-            long second = Math.max(eventId, other);
-            double sMin = minSums.get(first).get(second);
-            if (sMin <= 0) {
-                continue;
-            }
             double score = sMin / (Math.sqrt(sumA) * Math.sqrt(eventSums.get(other)));
             result.add(EventSimilarityAvro.newBuilder()
                     .setEventA(first)

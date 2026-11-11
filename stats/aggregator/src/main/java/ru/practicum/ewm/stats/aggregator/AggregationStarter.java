@@ -9,6 +9,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.errors.WakeupException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -17,8 +18,10 @@ import ru.practicum.ewm.stats.avro.EventSimilarityAvro;
 import ru.practicum.ewm.stats.avro.UserActionAvro;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 
 /**
  * Читает действия пользователей из Kafka, пересчитывает сходство мероприятий
@@ -79,10 +82,16 @@ public class AggregationStarter implements CommandLineRunner {
     }
 
     private void handle(UserActionAvro action) throws ExecutionException, InterruptedException {
+        // все сообщения по одному действию отправляются пакетом: сначала send, затем один flush
+        List<Future<RecordMetadata>> sent = new ArrayList<>();
         for (EventSimilarityAvro similarity : calculator.update(action)) {
-            producer.send(new ProducerRecord<>(similarityTopic, null, similarity.getTimestamp().toEpochMilli(),
-                    null, similarity)).get();
+            sent.add(producer.send(new ProducerRecord<>(similarityTopic, null,
+                    similarity.getTimestamp().toEpochMilli(), null, similarity)));
             log.debug("Сходство {} и {}: {}", similarity.getEventA(), similarity.getEventB(), similarity.getScore());
+        }
+        producer.flush();
+        for (Future<RecordMetadata> future : sent) {
+            future.get();
         }
     }
 }
