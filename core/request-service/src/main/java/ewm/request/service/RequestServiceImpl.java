@@ -12,6 +12,7 @@ import ewm.request.entity.RequestStatus;
 import ewm.request.mapper.RequestMapper;
 import ewm.request.repository.RequestRepository;
 import lombok.RequiredArgsConstructor;
+import stats.client.CollectorClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +31,7 @@ public class RequestServiceImpl implements RequestService {
     private final EventClient eventClient;
     private final UserClient userClient;
     private final PlatformTransactionManager transactionManager;
+    private final CollectorClient collectorClient;
 
     @Override
     public ParticipationRequestDto create(Long userId, Long eventId) {
@@ -37,7 +39,10 @@ public class RequestServiceImpl implements RequestService {
         userClient.getUser(userId);
         EventInternalDto event = eventClient.getEvent(eventId);
 
-        return inTransaction(() -> createRequest(userId, eventId, event));
+        ParticipationRequestDto created = inTransaction(() -> createRequest(userId, eventId, event));
+        // заявка уже сохранена - фиксируем регистрацию в статистике вне транзакции
+        collectorClient.sendRegister(userId, eventId);
+        return created;
     }
 
     private ParticipationRequestDto createRequest(Long userId, Long eventId, EventInternalDto event) {

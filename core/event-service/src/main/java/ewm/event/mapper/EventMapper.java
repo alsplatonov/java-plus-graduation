@@ -52,7 +52,6 @@ public final class EventMapper {
                 event.isRequestModeration(),
                 event.getState(),
                 event.getTitle(),
-                metrics.views(),
                 metrics.likes(),
                 metrics.dislikes(),
                 metrics.rating());
@@ -68,7 +67,6 @@ public final class EventMapper {
                 initiator,
                 event.isPaid(),
                 event.getTitle(),
-                metrics.views(),
                 metrics.likes(),
                 metrics.dislikes(),
                 metrics.rating()

@@ -35,4 +35,8 @@ public interface EventService {
     Set<Event> getEventsByIds(Set<Long> eventIds);
 
     List<EventShortDto> getTopEvents(int from, int size);
+
+    List<EventShortDto> getRecommendations(long userId, int maxResults);
+
+    void like(long userId, long eventId);
 }

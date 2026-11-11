@@ -16,7 +16,3 @@ spring:
 
 server:
   port: 0
-
-client:
-  stats-service-id: stats-server
-  app-name: ewm-main-service

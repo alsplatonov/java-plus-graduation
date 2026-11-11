@@ -25,10 +25,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import stats.client.StatsClient;
-import stats.client.StatsClientException;
-import stats.dto.ViewStatsDto;
+import stats.client.AnalyzerClient;
+import stats.client.CollectorClient;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -42,9 +42,6 @@ import java.util.stream.Stream;
 @Transactional(readOnly = true)
 public class EventServiceImpl implements EventService {
 
-    private final StatsClient statsClient;
-
-    private static final LocalDateTime STATS_RANGE_START = LocalDateTime.of(2000, 1, 1, 0, 0);
     private static final int REMOTE_BATCH_SIZE = 200;
     private static final int EVENT_LEAD_TIME_HOURS = 2;
     private static final int ADMIN_EVENT_LEAD_TIME_HOURS = 1;
@@ -56,6 +53,8 @@ public class EventServiceImpl implements EventService {
     private final RequestClient requestClient;
     private final RatingClient ratingClient;
     private final InitiatorResolver initiatorResolver;
+    private final AnalyzerClient analyzerClient;
+    private final CollectorClient collectorClient;
 
     @Override
     public List<EventShortDto> getUserEvents(Long userId, PageRequestDto pageRequest) {
@@ -184,7 +183,7 @@ public class EventServiceImpl implements EventService {
 
         Specification<Event> specification = EventSpecification.byPublicFilters(searchParams);
         PublicEventSort sort = searchParams.getSort();
-        boolean sortedByMetric = sort == PublicEventSort.VIEWS || sort == PublicEventSort.RATING;
+        boolean sortedByMetric = sortedByMetric(sort);
 
         if (!sortedByMetric && !searchParams.isOnlyAvailable()) {
             // порядок и страница определяются целиком на уровне БД
@@ -193,6 +192,10 @@ public class EventServiceImpl implements EventService {
             return toShortDtos(events, metricsFor(eventIdsOf(events)));
         }
         return getRankedPublicEvents(searchParams, specification, sort);
+    }
+
+    private static boolean sortedByMetric(PublicEventSort sort) {
+        return sort == PublicEventSort.VIEWS || sort == PublicEventSort.RATING;
     }
 
     private List<EventShortDto> getRankedPublicEvents(PublicEventSearchParams searchParams,
@@ -214,10 +217,9 @@ public class EventServiceImpl implements EventService {
         }
         List<Long> ids = candidates.map(key -> (Long) key[0]).collect(Collectors.toList());
 
-        if (sort == PublicEventSort.VIEWS) {
-            ids.sort(Comparator.comparingLong((Long id) -> metrics.get(id).views()).reversed());
-        } else if (sort == PublicEventSort.RATING) {
-            ids.sort(Comparator.comparingLong((Long id) -> metrics.get(id).rating()).reversed());
+        if (sortedByMetric(sort)) {
+            // просмотры теперь учитываются в рейтинге, поэтому обе сортировки используют рейтинг из Analyzer
+            ids.sort(Comparator.comparingDouble((Long id) -> metrics.get(id).rating()).reversed());
         }
 
         List<Long> pageIds = ids.stream()
@@ -240,6 +242,46 @@ public class EventServiceImpl implements EventService {
             throw new NotFoundException("Событие с идентификатором " + eventId + " не найдено.");
         }
         return toFullDto(event);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<EventShortDto> getRecommendations(long userId, int maxResults) {
+        List<Long> ids = analyzerClient.getRecommendationsForUser(userId, maxResults).stream()
+                .map(AnalyzerClient.EventScore::eventId)
+                .toList();
+        return toOrderedPublishedShortDtos(ids);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void like(long userId, long eventId) {
+        Event event = getEvent(eventId);
+        if (event.getState() != EventState.PUBLISHED) {
+            throw new NotFoundException("Событие с идентификатором " + eventId + " не найдено.");
+        }
+        if (!requestClient.hasConfirmedRequest(eventId, userId)) {
+            throw new ValidationException("Пользователь " + userId
+                    + " не посещал мероприятие " + eventId + ", поставить лайк нельзя.");
+        }
+        collectorClient.sendLike(userId, eventId);
+    }
+
+    private List<EventShortDto> toOrderedPublishedShortDtos(List<Long> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Event> eventById = eventRepository.findAllById(ids).stream()
+                .filter(event -> event.getState() == EventState.PUBLISHED)
+                .collect(Collectors.toMap(Event::getId, Function.identity()));
+        List<Long> existing = ids.stream().filter(eventById::containsKey).toList();
+        Map<Long, EventMetrics> metrics = metricsFor(existing);
+        Map<Long, UserShortDto> initiators = initiatorsOf(eventById.values());
+        return existing.stream()
+                .map(eventById::get)
+                .map(event -> EventMapper.toEventShortDto(event, metrics.get(event.getId()),
+                        initiatorResolver.pick(initiators, event.getInitiatorId())))
+                .toList();
     }
 
     @Override
@@ -382,7 +424,7 @@ public class EventServiceImpl implements EventService {
             confirmedByEvent.putAll(requestClient.countConfirmed(chunk));
             ratingClient.getRatings(chunk).forEach(rating -> ratingsByEvent.putIfAbsent(rating.getEventId(), rating));
         }
-        Map<Long, Long> viewsByEvent = viewsFor(eventIds);
+        Map<Long, Double> ratingByEvent = analyzerClient.getInteractionsCount(eventIds);
 
         return eventIds.stream().collect(Collectors.toMap(
                 id -> id,
@@ -394,10 +436,9 @@ public class EventServiceImpl implements EventService {
 
                     return new EventMetrics(
                             confirmedByEvent.getOrDefault(id, 0L),
-                            viewsByEvent.getOrDefault(id, 0L),
                             likes,
                             dislikes,
-                            likes - dislikes);
+                            ratingByEvent.getOrDefault(id, 0.0));
                 }
         ));
     }
@@ -415,18 +456,6 @@ public class EventServiceImpl implements EventService {
         }
     }
 
-    private long viewsFor(Long eventId) {
-        return viewsFor(List.of(eventId)).getOrDefault(eventId, 0L);
-    }
-
-    private Map<Long, Long> viewsFor(List<Long> eventIds) {
-        Map<Long, Long> views = new HashMap<>();
-        for (List<Long> chunk : partition(eventIds)) {
-            views.putAll(viewsForChunk(chunk));
-        }
-        return views;
-    }
-
     // Разбивает идентификаторы на части, чтобы не превышать допустимую длину URL при вызовах других сервисов
     private static List<List<Long>> partition(List<Long> ids) {
         List<List<Long>> chunks = new ArrayList<>();
@@ -434,36 +463,6 @@ public class EventServiceImpl implements EventService {
             chunks.add(ids.subList(i, Math.min(i + REMOTE_BATCH_SIZE, ids.size())));
         }
         return chunks;
-    }
-
-    private Map<Long, Long> viewsForChunk(List<Long> eventIds) {
-        if (eventIds.isEmpty()) {
-            return Map.of();
-        }
-
-        List<String> uris = eventIds.stream()
-                .map(EventServiceImpl::eventUri)
-                .toList();
-
-        Map<String, Long> hitsByUri;
-        try {
-            hitsByUri = statsClient.getStats(STATS_RANGE_START, LocalDateTime.now(), uris, true)
-                    .stream()
-                    .collect(Collectors.toMap(ViewStatsDto::getUri, ViewStatsDto::getHits));
-        } catch (StatsClientException e) {
-            log.warn("Статистика просмотров недоступна, просмотры событий {} не учтены: {}",
-                    eventIds, e.getMessage());
-            return eventIds.stream().collect(Collectors.toMap(id -> id, id -> 0L));
-        }
-
-        return eventIds.stream()
-                .collect(Collectors.toMap(
-                        id -> id,
-                        id -> hitsByUri.getOrDefault(eventUri(id), 0L)));
-    }
-
-    private static String eventUri(Long eventId) {
-        return "/events/" + eventId;
     }
 
 }
