@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Инкрементальный пересчёт сходства мероприятий (косинусное сходство по максимальным весам действий)
@@ -32,6 +33,7 @@ public class SimilarityCalculator {
     private final Map<Long, Set<Long>> userEvents = new HashMap<>();
     private final Map<Long, Double> eventSums = new HashMap<>();
     private final Map<Long, Map<Long, Double>> minSums = new HashMap<>();
+    private final Map<Long, TreeSet<Long>> partners = new HashMap<>();
 
     public static double weightOf(ActionTypeAvro type) {
         return switch (type) {
@@ -60,7 +62,7 @@ public class SimilarityCalculator {
         Set<Long> events = userEvents.computeIfAbsent(userId, k -> new HashSet<>());
         events.add(eventId);
 
-        List<EventSimilarityAvro> result = new ArrayList<>();
+        // 1) обновляем S_min для пар события с остальными событиями этого пользователя
         for (Long other : events) {
             if (other == eventId) {
                 continue;
@@ -70,11 +72,22 @@ public class SimilarityCalculator {
 
             long first = Math.min(eventId, other);
             long second = Math.max(eventId, other);
-            Map<Long, Double> row = minSums.computeIfAbsent(first, k -> new HashMap<>());
-            double sMin = row.merge(second, delta, Double::sum);
+            minSums.computeIfAbsent(first, k -> new HashMap<>()).merge(second, delta, Double::sum);
+            partners.computeIfAbsent(eventId, k -> new TreeSet<>()).add(other);
+            partners.computeIfAbsent(other, k -> new TreeSet<>()).add(eventId);
+        }
 
-            double sumB = eventSums.get(other);
-            double score = sMin / (Math.sqrt(sumA) * Math.sqrt(sumB));
+        // 2) S_A изменилась, поэтому пересчитываем сходство со всеми событиями, у которых есть общая S_min
+        //    (в том числе благодаря другим пользователям), в порядке возрастания идентификатора
+        List<EventSimilarityAvro> result = new ArrayList<>();
+        for (Long other : partners.getOrDefault(eventId, new TreeSet<>())) {
+            long first = Math.min(eventId, other);
+            long second = Math.max(eventId, other);
+            double sMin = minSums.get(first).get(second);
+            if (sMin <= 0) {
+                continue;
+            }
+            double score = sMin / (Math.sqrt(sumA) * Math.sqrt(eventSums.get(other)));
             result.add(EventSimilarityAvro.newBuilder()
                     .setEventA(first)
                     .setEventB(second)
