@@ -81,7 +81,7 @@ public class AggregationStarter implements CommandLineRunner {
     private void handle(UserActionAvro action) throws ExecutionException, InterruptedException {
         for (EventSimilarityAvro similarity : calculator.update(action)) {
             producer.send(new ProducerRecord<>(similarityTopic, null, similarity.getTimestamp().toEpochMilli(),
-                    similarity.getEventA() + "_" + similarity.getEventB(), similarity)).get();
+                    null, similarity)).get();
             log.debug("Сходство {} и {}: {}", similarity.getEventA(), similarity.getEventB(), similarity.getScore());
         }
     }

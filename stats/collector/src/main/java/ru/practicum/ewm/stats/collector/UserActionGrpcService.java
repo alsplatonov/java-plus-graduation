@@ -44,7 +44,7 @@ public class UserActionGrpcService extends UserActionControllerGrpc.UserActionCo
                     .setTimestamp(toInstant(request.getTimestamp()))
                     .build();
             producer.send(new ProducerRecord<>(topic, null, avro.getTimestamp().toEpochMilli(),
-                    String.valueOf(avro.getUserId()), avro)).get();
+                    null, avro)).get();
             log.info("Действие {} пользователя {} над событием {} отправлено в {}",
                     avro.getActionType(), avro.getUserId(), avro.getEventId(), topic);
             responseObserver.onNext(Empty.getDefaultInstance());
