@@ -13,9 +13,11 @@ import ru.practicum.ewm.stats.analyzer.repository.UserEventWeightRepository;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -24,24 +26,22 @@ import java.util.stream.Collectors;
 @Transactional(readOnly = true)
 public class RecommendationService {
 
-    /** Пара (мероприятие, оценка). */
+    // Пара (мероприятие, оценка)
     public record Scored(long eventId, double score) {
     }
 
     private final UserEventWeightRepository weightRepository;
     private final EventSimilarityRepository similarityRepository;
 
-    /** Сколько последних взаимодействий пользователя использовать для поиска кандидатов. */
+    // Сколько последних взаимодействий пользователя использовать для поиска кандидатов
     @Value("${analyzer.recommendations.recent-interactions:10}")
     private int recentInteractions;
 
-    /** Сколько ближайших соседей учитывать при предсказании оценки. */
+    // Сколько ближайших соседей учитывать при предсказании оценки
     @Value("${analyzer.recommendations.neighbours:5}")
     private int neighbours;
 
-    /**
-     * Мероприятия, похожие на заданное, с которыми пользователь ещё не взаимодействовал.
-     */
+    // Мероприятия, похожие на заданное, с которыми пользователь ещё не взаимодействовал.
     public List<Scored> getSimilarEvents(long eventId, long userId, int maxResults) {
         Set<Long> seen = weightRepository.findByUserId(userId).stream()
                 .map(UserEventWeight::getEventId).collect(Collectors.toSet());
@@ -53,10 +53,8 @@ public class RecommendationService {
                 .toList();
     }
 
-    /**
-     * Рекомендации для пользователя: кандидаты берутся среди мероприятий, похожих на недавно
-     * просмотренные, оценка предсказывается как взвешенное среднее оценок ближайших соседей.
-     */
+    // Рекомендации для пользователя: кандидаты берутся среди мероприятий, похожих на недавно
+    // просмотренные, оценка предсказывается как взвешенное среднее оценок ближайших соседей
     public List<Scored> getRecommendationsForUser(long userId, int maxResults) {
         List<UserEventWeight> all = weightRepository.findByUserId(userId);
         if (all.isEmpty() || maxResults <= 0) {
@@ -68,32 +66,44 @@ public class RecommendationService {
         List<UserEventWeight> recent = weightRepository.findByUserIdOrderByUpdatedAtDesc(userId,
                 PageRequest.of(0, recentInteractions));
 
-        // кандидаты: непросмотренные мероприятия, похожие на недавние
-        Map<Long, Double> candidates = new HashMap<>();
-        for (UserEventWeight w : recent) {
-            for (EventSimilarity s : similarityRepository.findAllByEvent(w.getEventId())) {
-                long other = s.otherThan(w.getEventId());
-                if (!ratings.containsKey(other)) {
-                    candidates.merge(other, s.getScore(), Math::max);
+        // кандидаты: непросмотренные мероприятия, похожие на недавние (один запрос на все недавние события)
+        Set<Long> recentIds = recent.stream().map(UserEventWeight::getEventId).collect(Collectors.toSet());
+        Set<Long> candidateIds = new HashSet<>();
+        for (EventSimilarity s : similarityRepository.findAllByEventIn(recentIds)) {
+            for (long id : new long[]{s.getEventA(), s.getEventB()}) {
+                if (!ratings.containsKey(id)) {
+                    candidateIds.add(id);
                 }
             }
         }
+        if (candidateIds.isEmpty()) {
+            return List.of();
+        }
 
-        List<Long> candidateIds = candidates.entrySet().stream()
-                .sorted(Map.Entry.<Long, Double>comparingByValue().reversed())
-                .limit(maxResults)
-                .map(Map.Entry::getKey)
-                .toList();
+        // коэффициенты всех кандидатов загружаются одним запросом и группируются по кандидату
+        Map<Long, List<EventSimilarity>> byCandidate = new HashMap<>();
+        for (EventSimilarity s : similarityRepository.findAllByEventIn(candidateIds)) {
+            if (candidateIds.contains(s.getEventA())) {
+                byCandidate.computeIfAbsent(s.getEventA(), k -> new ArrayList<>()).add(s);
+            }
+            if (candidateIds.contains(s.getEventB())) {
+                byCandidate.computeIfAbsent(s.getEventB(), k -> new ArrayList<>()).add(s);
+            }
+        }
 
+        // сначала оцениваются все кандидаты, затем сортировка по итоговой оценке и только потом limit
         List<Scored> result = new ArrayList<>();
         for (Long candidate : candidateIds) {
-            predict(candidate, ratings).ifPresent(result::add);
+            predict(candidate, byCandidate.getOrDefault(candidate, List.of()), ratings).ifPresent(result::add);
         }
-        result.sort(Comparator.comparingDouble(Scored::score).reversed());
-        return result;
+        return result.stream()
+                .sorted(Comparator.comparingDouble(Scored::score).reversed()
+                        .thenComparingLong(Scored::eventId))
+                .limit(maxResults)
+                .toList();
     }
 
-    /** Сумма максимальных весов всех пользователей по каждому из мероприятий (0 при отсутствии данных). */
+    // Сумма максимальных весов всех пользователей по каждому из мероприятий (0 при отсутствии данных)
     public List<Scored> getInteractionsCount(List<Long> eventIds) {
         if (eventIds.isEmpty()) {
             return List.of();
@@ -106,8 +116,9 @@ public class RecommendationService {
         return ordered.entrySet().stream().map(e -> new Scored(e.getKey(), e.getValue())).toList();
     }
 
-    private java.util.Optional<Scored> predict(long candidate, Map<Long, Double> ratings) {
-        List<EventSimilarity> nearest = similarityRepository.findAllByEvent(candidate).stream()
+    private Optional<Scored> predict(long candidate, List<EventSimilarity> similarities,
+                                     Map<Long, Double> ratings) {
+        List<EventSimilarity> nearest = similarities.stream()
                 .filter(s -> ratings.containsKey(s.otherThan(candidate)))
                 .sorted(Comparator.comparingDouble(EventSimilarity::getScore).reversed())
                 .limit(neighbours)
@@ -119,8 +130,8 @@ public class RecommendationService {
             sims += s.getScore();
         }
         if (sims == 0) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
-        return java.util.Optional.of(new Scored(candidate, weighted / sims));
+        return Optional.of(new Scored(candidate, weighted / sims));
     }
 }

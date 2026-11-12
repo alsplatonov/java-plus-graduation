@@ -9,6 +9,7 @@ import net.devh.boot.grpc.server.service.GrpcService;
 import org.apache.avro.specific.SpecificRecordBase;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.KafkaException;
 import org.springframework.beans.factory.annotation.Value;
 import ru.practicum.ewm.stats.avro.ActionTypeAvro;
 import ru.practicum.ewm.stats.avro.UserActionAvro;
@@ -17,6 +18,7 @@ import ru.practicum.ewm.stats.grpc.action.UserActionProto;
 import ru.practicum.ewm.stats.grpc.collector.UserActionControllerGrpc;
 
 import java.time.Instant;
+import java.util.concurrent.ExecutionException;
 
 /**
  * gRPC-сервис приёма действий пользователей. Преобразует сообщение в Avro и отправляет в Kafka
@@ -49,9 +51,18 @@ public class UserActionGrpcService extends UserActionControllerGrpc.UserActionCo
                     avro.getActionType(), avro.getUserId(), avro.getEventId(), topic);
             responseObserver.onNext(Empty.getDefaultInstance());
             responseObserver.onCompleted();
+        } catch (IllegalArgumentException e) {
+            // неизвестный тип действия - ошибка входных данных, а не сбой Collector
+            log.warn("Некорректное действие пользователя: {}", e.getMessage());
+            responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(e.getMessage()).withCause(e)
+                    .asRuntimeException());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             responseObserver.onError(Status.INTERNAL.withDescription(e.getMessage()).withCause(e).asRuntimeException());
+        } catch (ExecutionException | KafkaException e) {
+            log.error("Kafka недоступна, действие пользователя не отправлено", e);
+            responseObserver.onError(Status.UNAVAILABLE.withDescription("Kafka недоступна").withCause(e)
+                    .asRuntimeException());
         } catch (Exception e) {
             log.error("Не удалось обработать действие пользователя", e);
             responseObserver.onError(Status.INTERNAL.withDescription(e.getMessage()).withCause(e).asRuntimeException());

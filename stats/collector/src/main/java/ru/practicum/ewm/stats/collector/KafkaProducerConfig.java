@@ -14,7 +14,7 @@ import java.util.Properties;
 @Configuration
 public class KafkaProducerConfig {
 
-    @Bean(destroyMethod = "close")
+    @Bean(destroyMethod = "")
     public KafkaProducer<String, SpecificRecordBase> kafkaProducer(
             @Value("${kafka.bootstrap-servers}") String bootstrapServers) {
         Properties props = new Properties();

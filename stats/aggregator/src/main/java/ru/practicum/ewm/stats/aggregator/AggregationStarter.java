@@ -70,13 +70,13 @@ public class AggregationStarter implements CommandLineRunner {
         } catch (Exception e) {
             log.error("Ошибка во время обработки действий пользователей", e);
         } finally {
+            // offset подтверждается только в цикле после успешной обработки пакета сообщений
             try {
                 producer.flush();
-                consumer.commitSync();
             } finally {
                 log.info("Закрываем consumer и producer");
                 consumer.close();
-                producer.close();
+                producer.close(Duration.ofSeconds(5));
             }
         }
     }
