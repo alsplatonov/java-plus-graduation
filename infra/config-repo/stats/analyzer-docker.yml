@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://analyzer-db:5432/analyzer_db
+
+kafka:
+  bootstrap-servers: kafka:29092

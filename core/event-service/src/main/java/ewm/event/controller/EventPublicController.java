@@ -4,14 +4,13 @@ import ewm.event.dto.EventFullDto;
 import ewm.event.dto.EventShortDto;
 import ewm.event.dto.PublicEventSearchParams;
 import ewm.event.service.EventService;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-import stats.client.StatsClient;
+import stats.client.CollectorClient;
 
 import java.util.List;
 
@@ -22,31 +21,37 @@ import java.util.List;
 public class EventPublicController {
 
     private final EventService eventService;
-    private final StatsClient statsClient;
+    private final CollectorClient collectorClient;
 
     @GetMapping
-    public List<EventShortDto> getEvents(@Valid @ModelAttribute PublicEventSearchParams searchParams,
-                                         HttpServletRequest req) {
-        recordHit(req);
+    public List<EventShortDto> getEvents(@Valid @ModelAttribute PublicEventSearchParams searchParams) {
         return eventService.getPublicEvents(searchParams);
     }
 
     @GetMapping("/{id}")
-    public EventFullDto getEvent(@PathVariable Long id, HttpServletRequest req) {
-        recordHit(req);
-        return eventService.getPublicEvent(id);
+    public EventFullDto getEvent(@PathVariable Long id,
+                                 @RequestHeader("X-EWM-USER-ID") long userId) {
+        EventFullDto event = eventService.getPublicEvent(id);
+        // просмотр фиксируется только для существующего опубликованного события
+        collectorClient.sendView(userId, id);
+        return event;
+    }
+
+    @GetMapping("/recommendations")
+    public List<EventShortDto> getRecommendations(@RequestHeader("X-EWM-USER-ID") long userId,
+                                                  @RequestParam(defaultValue = "10") @Positive int maxResults) {
+        return eventService.getRecommendations(userId, maxResults);
+    }
+
+    @PutMapping("/{eventId}/like")
+    public void like(@PathVariable Long eventId,
+                     @RequestHeader("X-EWM-USER-ID") long userId) {
+        eventService.like(userId, eventId);
     }
 
     @GetMapping("/top")
     public List<EventShortDto> getTopEvents(@RequestParam(defaultValue = "0") @Min(0) int from,
                                             @RequestParam(defaultValue = "10") @Positive int size) {
         return eventService.getTopEvents(from, size);
-    }
-
-    private void recordHit(HttpServletRequest request) {
-        statsClient.hit(
-                request.getRequestURI(),
-                request.getRemoteAddr()
-        );
     }
 }

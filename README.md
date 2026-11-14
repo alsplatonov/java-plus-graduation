@@ -11,7 +11,7 @@
                        gateway-server  ──────────┐
         ┌────────────┬────────┴───────┬──────────┐│  lb:// через Eureka
         ▼            ▼                ▼          ▼│
-  user-service  request-service  rating-service  event-service ──► stats-server (статистика просмотров)
+  user-service  request-service  rating-service  event-service ──gRPC──► collector / analyzer (рекомендации)
      user_db       request_db       rating_db      main (events, categories, compilations)
 
   discovery-server (Eureka, 8761)    config-server (конфигурации сервисов из infra/config-repo)
@@ -27,7 +27,12 @@
 | `core/request-service` | Заявки на участие в событиях | `request_db` (6644) |
 | `core/rating-service` | Лайки/дизлайки событий, рейтинг событий и авторов (дополнительная функциональность) | `rating_db` (6645) |
 | `core/interaction-api` | Общая библиотека: Feign-клиенты и fallback'и, внутренние DTO, исключения, `ErrorHandler` | — |
-| `stats/*` | Сервис статистики (`stats-server`), клиент (`stats-client`), DTO (`stats-dto`) | `stats` (5432) |
+| `stats/serialization/avro-schemas` | Avro-схемы (`UserActionAvro`, `EventSimilarityAvro`) и Kafka-(де)сериализаторы | — |
+| `stats/serialization/proto-schemas` | gRPC/protobuf-контракты Collector и Analyzer | — |
+| `stats/collector` | gRPC-сервис приёма действий пользователей, пишет в Kafka `stats.user-actions.v1` | — |
+| `stats/aggregator` | Читает действия, инкрементально считает сходство мероприятий, пишет в `stats.events-similarity.v1` | — |
+| `stats/analyzer` | Хранит веса действий и сходство, отдаёт рекомендации по gRPC | `analyzer_db` (6646) |
+| `stats/stats-client` | gRPC-клиенты `CollectorClient` и `AnalyzerClient` для других сервисов | — |
 
 `event-service` остаётся сервисом управления событиями (в него входят также категории и подборки, которые тесно связаны с событиями).
 Из него вынесены пользователи, заявки и рейтинги.
@@ -40,7 +45,8 @@
 
 ## Внешний API
 - основной сервис: [`ewm-main-service-spec.json`](ewm-main-service-spec.json) (также дополнительные эндпоинты рейтинга: `PUT /users/{userId}/events/{eventId}/like|dislike`, `DELETE /users/{userId}/events/{eventId}/rating`, `GET /users/{userId}/rating`, `GET /users/top-authors`, `GET /events/top`);
-- сервис статистики: [`ewm-stats-service-spec.json`](ewm-stats-service-spec.json).
+- рекомендательная система: `GET /events/{id}` (заголовок `X-EWM-USER-ID`, фиксирует просмотр), `GET /events/recommendations` (заголовок `X-EWM-USER-ID`, параметр `maxResults`),
+  `PUT /events/{eventId}/like` (заголовок `X-EWM-USER-ID`, только для посетителей события, иначе `400`). Поле `views` заменено на `rating` (число, считается Analyzer).
 
 Клиенты обращаются только в Gateway (`http://localhost:8080`). Маршруты (`infra/config-repo/infra/gateway-server.yml`):
 
@@ -69,12 +75,31 @@
 `rating-service` → event-service, request-service, user-service. Все «списочные» операции используют пакетные эндпоинты, поэтому число межсервисных запросов
 не зависит от размера выборки (нет N+1).
 
+## Рекомендательная система (этап 3)
+Потоки данных:
+
+```
+event-service / request-service ──gRPC──► collector ──Kafka: stats.user-actions.v1──► aggregator
+                                                          │                              │
+                                                          │            Kafka: stats.events-similarity.v1
+                                                          ▼                              ▼
+                                                       analyzer (БД analyzer_db) ◄───────┘
+event-service ◄──gRPC (стримы)── analyzer
+```
+
+- Веса действий: просмотр `0.4`, регистрация `0.8`, лайк `1.0`; для пары пользователь/мероприятие учитывается максимальный вес.
+- Aggregator пересчитывает только изменившиеся суммы (`S_min`, `S_A`, `S_B`): сходство = `S_min / (sqrt(S_A) * sqrt(S_B))`.
+- Analyzer: `GetSimilarEvents` (похожие, с которыми пользователь не взаимодействовал), `GetRecommendationsForUser` (кандидаты из мероприятий, похожих на недавние взаимодействия; оценка — взвешенное среднее оценок ближайших соседей),
+  `GetInteractionsCount` (сумма максимальных весов, это и есть `rating` события). Параметры `analyzer.recommendations.*` лежат в `infra/config-repo/stats/analyzer.yml`.
+- gRPC-серверы слушают случайный порт (`grpc.server.port: 0`); реальный порт публикуется в метаданных Eureka (`gRPC_port`), клиенты ходят по адресу `discovery:///collector|analyzer`.
+- Сбой Collector не ломает основной сценарий (ошибка логируется); при недоступности Analyzer рейтинг равен `0`, а рекомендации пустые.
+
 ## Отказоустойчивость
 - Feign + Eureka (`lb://`), для каждого клиента задан `fallbackFactory` (`core/interaction-api/.../ewm/client`).
 - Circuit breaker и time limiter — Resilience4j (`ResilienceConfig`); ответы 400/404/409 не считаются отказом.
 - Ответы 5xx повторяются (`Retryer`, 3 попытки) — `FeignClientConfig`.
 - Если зависимый сервис недоступен, при чтении используются значения по умолчанию: заявки/лайки/дизлайки/рейтинг — `0`, имя инициатора — `null`,
-  просмотры из stats — `0`. Операции, где без проверки нельзя корректно записать данные (создание заявки/события/оценки), отвечают `503 Service Unavailable`.
+  рейтинг из Analyzer — `0`. Операции, где без проверки нельзя корректно записать данные (создание заявки/события/оценки), отвечают `503 Service Unavailable`.
 
 ## Конфигурация
 Каждый сервис хранит локально только `spring.application.name` и параметры подключения к Config Server (`src/main/resources/application.yml`).
@@ -84,13 +109,13 @@
 infra/config-repo/
 ├── application.yml            # общее: Eureka, Feign/Resilience
 ├── application-docker.yml     # общее для профиля docker
-├── core/{main,user,request,rating}-service[-docker].yml
-├── stats/stats-server[-docker].yml
+├── core/{event,user,request,rating}-service[-docker].yml
+├── stats/{collector,aggregator,analyzer}[-docker].yml
 └── infra/gateway-server.yml
 ```
 
 ## Запуск
 1. Собрать: `mvn clean package`
 2. Docker: `docker compose up --build` — поднимутся все сервисы и БД; наружу опубликован только Gateway (`8080`) и Eureka (`8761`), сервисы запускаются на случайных портах.
-3. Локально из IDE: запустить БД (`docker compose up -d stats-db ewm-db user-db request-db rating-db`), затем по порядку `discovery-server`, `config-server`,
+3. Локально из IDE: запустить БД (`docker compose up -d kafka kafka-init-topics analyzer-db ewm-db user-db request-db rating-db`), затем по порядку `discovery-server`, `config-server`,
    затем остальные сервисы и `gateway-server`.

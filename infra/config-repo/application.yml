@@ -20,3 +20,17 @@ spring:
           default:
             connect-timeout: 2000
             read-timeout: 2000
+
+# gRPC-клиенты сервисов статистики: адреса берутся из Eureka
+grpc:
+  client:
+    collector:
+      address: 'discovery:///collector'
+      enableKeepAlive: true
+      keepAliveWithoutCalls: true
+      negotiationType: plaintext
+    analyzer:
+      address: 'discovery:///analyzer'
+      enableKeepAlive: true
+      keepAliveWithoutCalls: true
+      negotiationType: plaintext
